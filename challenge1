@@ -1,0 +1,167 @@
+# -*- coding: utf-8 -*-
+import csv
+import subprocess
+import string
+import random
+import sha 
+from base64 import b64encode 
+import smtplib
+from smtplib import SMTPException
+import getpass
+import mysql.connector
+
+mydb = mysql.connector.connect (
+        host="localhost",
+        user="userdb",
+        passwd="Meli2019#"
+)
+
+def veruid (): 
+  try:
+	subprocess.call ("ldapsearch -x -LLL uid=*| grep uidNumber >> uid",shell=True)
+	aux=0
+	f = open ("uid","r")
+	f1 = f.readlines()
+        for x in f1:
+          aux += 1
+       
+	return aux
+  except:
+	print ("Fallo la verificacion del uidNumber")
+
+def abrircsv (correo,mycursor):
+  asunto = "Credenciales LDAP"
+  with open('altas.csv') as csv_file:
+    body = ""
+    csv_reader = csv.reader(csv_file, delimiter=',')
+    line_count = 0
+    uidN = int (veruid()) + 2001 #todos los UID comienzan en 2000
+    for row in csv_reader:
+        if line_count == 0:
+          line_count += 1
+        else:
+	   i=1
+	   usr = genuser (row[0],row[1],i)
+	   no=verfexis(usr)
+	   while no==1:
+		i+=1	
+		usr = genuser (row[0],row[1],i)
+		no = verfexis(usr)
+	   psswd = genpass()
+	   hash = genhash(psswd)
+	   body = "Estimado, \nSe creo el usuario: " + usr + "\nLa contraseña es: " + psswd
+	   print (usr,hash)
+	   archivouser(file,usr,uidN,hash,row[1],row[2],row[0]+row[1])
+	   sendmail(row[2],correo,body,asunto)
+	   try:
+	   	sql = "INSERT INTO usuarios (username, estado, contraseña) VALUES(%s, %s, AES_ENCRYPT(%s,'LLAVE'))"
+	   	var = (usr, "Activo", psswd)
+	   	mycursor.execute(sql,var)
+	   	mydb.commit()
+	   except:
+		print ("Fallo la escritura en la base de datos")
+	   uidN+=1
+	line_count += 1
+	    
+
+def genuser (nom,ape,i):
+  try:
+	usr = nom[0:i] + ape
+	return usr
+  except:
+	print ("Fallo la generacion del usuario")
+
+def verfexis(usr):
+  try:
+	subprocess.call("ldapsearch -x -LLL uid="+usr+" >> ldap",shell=True)
+	aux = 0
+	f = open ("ldap","r")
+        f1 = f.readlines()
+        for x in f1:
+          aux += 1
+	if aux == 0:
+	  print (usr + " no existe")
+	  subprocess.call("rm ldap",shell=True)
+	  return 0
+	else:
+	  print (usr + " ya existe")
+	  subprocess.call("rm ldap",shell=True)
+	  return 1
+  except: 
+	print ("Fallo la verificacion del usuario")
+def genpass(stringLength=8):
+    lettersAndDigits = string.ascii_letters + string.digits
+    return ''.join(random.choice(lettersAndDigits) for i in range(stringLength))
+
+
+def genhash (psswd):
+  try:
+	ctx = sha.new(psswd) 
+	hash = "{SHA}" + b64encode(ctx.digest())
+	return hash
+  except:
+	print ("Fallo la generacion del hash")
+
+def sendmail(destinatario,correo,body,asunto):
+  try:
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    fromaddr = correo  #Completar desde la cuenta que se manda
+    toaddr = destinatario   #Hacia que cuenta se manda
+
+    msg = MIMEMultipart()
+
+    msg['From'] = fromaddr
+    msg['To'] = toaddr
+    msg['Subject'] = asunto
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    text = msg.as_string()
+    server.sendmail(fromaddr, toaddr, text)
+  except:
+    print ("Fallo el envio de correo")  
+
+def credenciales():
+	correo = raw_input ("Ingrese la cuenta desde donde se va enviar los mails: ")
+ 	passwdmail = getpass.getpass ("Ingrese la contraseña: ")
+	
+	return correo, passwdmail
+
+def archivouser(file,user,uidN,passwd,apellido,mail,nombre):
+	file.write("\ndn: uid=%s,ou=People,dc=mercadolibre,dc=com\n" % (user))
+	file.write("objectClass: top\n")
+	file.write("objectClass: posixAccount\n")
+	file.write("objectClass: inetOrgPerson\n")
+	file.write("objectClass: person\n")
+	#file.write("objectClass: pwdPolicy\n")
+	file.write("cn: UsuariosLDAP\n")
+	file.write("uid: %s\n" % (user))
+	file.write("uidNumber: %s\n" % (uidN))
+	file.write("gidNumber: 1001\n")
+	#file.write("pwdReset: TRUE\n")
+	file.write("homeDirectory: /home/users/%s\n" %(user))
+	file.write("loginShell: /bin/bash\n")
+	file.write("userPassword: %s\n" % (passwd))
+	file.write("sn: %s\n" % (apellido))
+	file.write("mail: %s\n" % (mail))
+	file.write("givenName: %s\n\n" % (nombre))
+
+
+print ("Comienzo de ejecucion")
+subprocess.call ("rm uid",shell=True)
+file = open ("user.ldif","w+")
+mycursor = mydb.cursor()
+mycursor.execute ("USE usuarios")
+correo, passwdmail = credenciales ()
+try: 
+    server = smtplib.SMTP ('smtp.gmail.com',587)
+    server.starttls()
+    server.login(correo, passwdmail)
+except smtplib.SMTPException:
+    print ("Error de logueo")
+abrircsv(correo,mycursor)
+server.quit() #cierro sesion de smtp
+file.close()
+subprocess.call ('ldapadd -ZZ -x -W -D "cn=ldapadm,dc=mercadolibre,dc=com" -f user.ldif',shell=True)
+print ("Finzalizo la ejecucion")
